@@ -188,6 +188,12 @@ impl StreamReader {
                 )
             })
     }
+
+    /// Check if the stream writer has been closed or dropped.
+    pub fn is_closed(&self) -> bool {
+        let state = self.state.lock();
+        state.closed.is_err() || state.modified().is_none()
+    }
 }
 
 impl Deref for StreamReader {
