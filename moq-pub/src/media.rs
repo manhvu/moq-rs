@@ -1,5 +1,5 @@
 use anyhow::{self, Context};
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use moq_transport::serve::{SubgroupWriter, SubgroupsWriter, TrackWriter, TracksWriter};
 use mp4::{self, ReadBox, TrackType};
 use std::cmp::max;
@@ -323,6 +323,11 @@ struct Track {
     // The current segment
     current: Option<SubgroupWriter>,
 
+    // Pending moof header bytes, waiting to be combined with mdat.
+    // Per CMSF (draft-ietf-moq-cmsf-00 §3.3), each MoQ Object must contain
+    // at least one complete CMAF Chunk (moof+mdat pair).
+    pending_moof: Option<Bytes>,
+
     // The number of units per second.
     timescale: u64,
 
@@ -335,15 +340,17 @@ impl Track {
         Self {
             track: track.subgroups().unwrap(),
             current: None,
+            pending_moof: None,
             timescale,
             handler,
         }
     }
 
     pub fn header(&mut self, raw: Bytes, fragment: Fragment) -> anyhow::Result<()> {
-        if let Some(current) = self.current.as_mut() {
-            // Use the existing segment
-            current.write(raw)?;
+        if self.current.is_some() {
+            // Use the existing segment — just stash the moof for now.
+            debug_assert!(self.pending_moof.is_none(), "overwriting pending moof");
+            self.pending_moof = Some(raw);
             return Ok(());
         }
 
@@ -360,15 +367,15 @@ impl Track {
         let priority: u8 = 127;
 
         // Create a new segment.
-        let mut segment = self.track.append(priority)?;
+        let segment = self.track.append(priority)?;
 
         println!(
             "timestamp: {:?} segment: {:?}:{:?} priority: {:?}",
             fragment.timestamp, segment.info.group_id, segment.info.subgroup_id, priority
         );
 
-        // Write the fragment in it's own object.
-        segment.write(raw)?;
+        // Stash the moof — it will be combined with mdat in data().
+        self.pending_moof = Some(raw);
 
         // Save for the next iteration
         self.current = Some(segment);
@@ -377,14 +384,20 @@ impl Track {
     }
 
     pub fn data(&mut self, raw: Bytes) -> anyhow::Result<()> {
+        let moof = self.pending_moof.take().context("missing pending moof")?;
         let segment = self.current.as_mut().context("missing current fragment")?;
-        segment.write(raw)?;
+        // Combine moof+mdat into a single MoQ Object (CMSF §3.3 compliance).
+        let mut combined = BytesMut::with_capacity(moof.len() + raw.len());
+        combined.put_slice(&moof);
+        combined.put_slice(&raw);
+        segment.write(combined.freeze())?;
 
         Ok(())
     }
 
     pub fn end_group(&mut self) {
         self.current = None;
+        self.pending_moof = None;
     }
 }
 
