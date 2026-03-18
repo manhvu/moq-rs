@@ -108,17 +108,10 @@ async fn unregister_namespace_async(client: &Client, namespace_key: &str) -> Res
 ///
 /// # Scope handling
 ///
-/// **This coordinator ignores the `scope` parameter on all methods.**
-/// Namespaces are registered and looked up globally in the moq-api
-/// registry, keyed only by namespace path. This means namespaces from
-/// different scopes can collide — a publisher in scope A and a subscriber
-/// in scope B will both see the same namespace entries.
-///
-/// This is safe for single-scope deployments (one application per relay
-/// cluster) but **not suitable for multi-tenant deployments** where
-/// `resolve_scope()` returns different scope IDs for different tenants.
-/// For multi-tenant use, implement a coordinator that prefixes the
-/// moq-api key with the scope (e.g., `format!("{scope}/{namespace}")`).
+/// Registry keys encode the scope and namespace into a single collision-free
+/// string. Namespace tuple fields are hex-encoded to handle arbitrary bytes
+/// (MoQT namespaces are tuples of byte arrays, not strings). See
+/// [`ApiCoordinator::registry_key()`] for format details.
 pub struct ApiCoordinator {
     /// moq-api client
     client: Client,
@@ -127,6 +120,42 @@ pub struct ApiCoordinator {
 }
 
 impl ApiCoordinator {
+    /// Build the moq-api registry key for a namespace, scoped if applicable.
+    ///
+    /// The key unambiguously encodes `(scope, namespace)` into a single string
+    /// that can be used as an opaque key in the moq-api HTTP registry.
+    ///
+    /// ## Format
+    ///
+    /// Each namespace tuple field is hex-encoded and fields are joined with `.`.
+    /// The scope (if present) is prepended with a `:` separator:
+    ///
+    /// - Scoped:   `"{scope}:{hex_field0}.{hex_field1}..."`
+    /// - Unscoped: `":{hex_field0}.{hex_field1}..."`
+    ///
+    /// ## Why this is collision-free
+    ///
+    /// - Hex encoding (`[0-9a-f]`) preserves arbitrary bytes without ambiguity
+    /// - `.` separates tuple fields (can't appear in hex output)
+    /// - `:` separates scope from namespace (can't appear in hex output, and
+    ///   scopes are validated connection paths that don't contain `:`)
+    /// - The leading `:` on unscoped keys prevents collision with scoped keys
+    ///   (scopes always start with `/` per `normalize_connection_path`)
+    /// - Different tuple field counts produce different keys (e.g., one field
+    ///   `"ab"` → `"6162"` vs two fields `"a","b"` → `"61.62"`)
+    fn registry_key(scope: Option<&str>, namespace: &TrackNamespace) -> String {
+        let ns_hex: String = namespace
+            .fields
+            .iter()
+            .map(|f| hex::encode(&f.value))
+            .collect::<Vec<_>>()
+            .join(".");
+        match scope {
+            Some(s) => format!("{s}:{ns_hex}"),
+            None => format!(":{ns_hex}"),
+        }
+    }
+
     /// Create a new API-based coordinator.
     ///
     /// # Arguments
@@ -183,12 +212,7 @@ impl Coordinator for ApiCoordinator {
         scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<NamespaceRegistration> {
-        // Scope intentionally ignored — see struct-level doc comment.
-        if let Some(s) = scope {
-            tracing::debug!(scope = s, "ApiCoordinator: scope ignored for register_namespace");
-        }
-
-        let namespace_str = namespace.to_utf8_path();
+        let namespace_str = Self::registry_key(scope, namespace);
         let origin = Origin {
             url: self.config.relay_url.clone(),
         };
@@ -234,12 +258,7 @@ impl Coordinator for ApiCoordinator {
         scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<()> {
-        // Scope intentionally ignored — see struct-level doc comment.
-        if let Some(s) = scope {
-            tracing::debug!(scope = s, "ApiCoordinator: scope ignored for unregister_namespace");
-        }
-
-        let namespace_str = namespace.to_utf8_path();
+        let namespace_str = Self::registry_key(scope, namespace);
         tracing::info!(namespace = %namespace_str, "unregistering namespace from API: {}", namespace_str);
 
         self.client
@@ -256,10 +275,8 @@ impl Coordinator for ApiCoordinator {
         scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<(NamespaceOrigin, Option<quic::Client>)> {
-        // Scope intentionally ignored — see struct-level doc comment.
-        let namespace_str = namespace.to_utf8_path();
-        let scope_str = scope.unwrap_or("<unscoped>");
-        tracing::debug!(scope = scope_str, namespace = %namespace_str, "looking up namespace in API: {}", namespace_str);
+        let namespace_str = Self::registry_key(scope, namespace);
+        tracing::debug!(scope = scope.unwrap_or("<unscoped>"), namespace = %namespace_str, "looking up namespace in API: {}", namespace_str);
 
         // Query the API for the namespace
         let result = self
