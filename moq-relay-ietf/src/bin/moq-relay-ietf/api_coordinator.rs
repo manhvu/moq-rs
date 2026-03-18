@@ -60,7 +60,7 @@ impl ApiCoordinatorConfig {
 
 /// Handle that unregisters a namespace when dropped and manages TTL refresh
 struct NamespaceUnregisterHandle {
-    namespace: TrackNamespace,
+    namespace_key: String,
     client: Client,
     /// Channel to signal the refresh task to stop (wrapped in Option so we can take it in drop)
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -73,26 +73,24 @@ impl Drop for NamespaceUnregisterHandle {
             let _ = tx.send(());
         }
 
-        let namespace = self.namespace.clone();
+        let namespace_key = self.namespace_key.clone();
         let client = self.client.clone();
 
         // Spawn a task to unregister since we can't do async in drop
         tokio::spawn(async move {
-            if let Err(err) = unregister_namespace_async(&client, &namespace).await {
-                let ns = namespace.to_utf8_path();
-                tracing::warn!(namespace = %ns, error = %err, "failed to unregister namespace on drop: {}", err);
+            if let Err(err) = unregister_namespace_async(&client, &namespace_key).await {
+                tracing::warn!(namespace = %namespace_key, error = %err, "failed to unregister namespace on drop: {}", err);
             }
         });
     }
 }
 
 /// Async helper for unregistering a namespace
-async fn unregister_namespace_async(client: &Client, namespace: &TrackNamespace) -> Result<()> {
-    let namespace_str = namespace.to_utf8_path();
-    tracing::debug!(namespace = %namespace_str, "unregistering namespace from API: {}", namespace_str);
+async fn unregister_namespace_async(client: &Client, namespace_key: &str) -> Result<()> {
+    tracing::debug!(namespace = %namespace_key, "unregistering namespace from API: {}", namespace_key);
 
     client
-        .delete_origin(&namespace_str)
+        .delete_origin(namespace_key)
         .await
         .context("failed to delete namespace from API")?;
 
@@ -107,6 +105,20 @@ async fn unregister_namespace_async(client: &Client, namespace: &TrackNamespace)
 /// - HTTP-based registration and lookup
 /// - TTL-based automatic expiration of stale registrations
 /// - Background refresh tasks to maintain registrations
+///
+/// # Scope handling
+///
+/// **This coordinator ignores the `scope` parameter on all methods.**
+/// Namespaces are registered and looked up globally in the moq-api
+/// registry, keyed only by namespace path. This means namespaces from
+/// different scopes can collide — a publisher in scope A and a subscriber
+/// in scope B will both see the same namespace entries.
+///
+/// This is safe for single-scope deployments (one application per relay
+/// cluster) but **not suitable for multi-tenant deployments** where
+/// `resolve_scope()` returns different scope IDs for different tenants.
+/// For multi-tenant use, implement a coordinator that prefixes the
+/// moq-api key with the scope (e.g., `format!("{scope}/{namespace}")`).
 pub struct ApiCoordinator {
     /// moq-api client
     client: Client,
@@ -131,7 +143,7 @@ impl ApiCoordinator {
     /// Start a background task to refresh namespace registration
     fn start_refresh_task(
         client: Client,
-        namespace: TrackNamespace,
+        namespace_key: String,
         relay_url: Url,
         refresh_interval: Duration,
         mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
@@ -143,15 +155,14 @@ impl ApiCoordinator {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let namespace_str = namespace.to_utf8_path();
                         let origin = Origin { url: relay_url.clone() };
 
-                        match client.patch_origin(&namespace_str, origin).await {
+                        match client.patch_origin(&namespace_key, origin).await {
                             Ok(()) => {
-                                tracing::trace!(namespace = %namespace_str, "refreshed namespace registration: {}", namespace_str);
+                                tracing::trace!(namespace = %namespace_key, "refreshed namespace registration: {}", namespace_key);
                             }
                             Err(err) => {
-                                tracing::warn!(namespace = %namespace_str, error = %err, "failed to refresh namespace registration: {}", err);
+                                tracing::warn!(namespace = %namespace_key, error = %err, "failed to refresh namespace registration: {}", err);
                             }
                         }
                     }
@@ -169,8 +180,14 @@ impl ApiCoordinator {
 impl Coordinator for ApiCoordinator {
     async fn register_namespace(
         &self,
+        scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<NamespaceRegistration> {
+        // Scope intentionally ignored — see struct-level doc comment.
+        if let Some(s) = scope {
+            tracing::debug!(scope = s, "ApiCoordinator: scope ignored for register_namespace");
+        }
+
         let namespace_str = namespace.to_utf8_path();
         let origin = Origin {
             url: self.config.relay_url.clone(),
@@ -197,14 +214,14 @@ impl Coordinator for ApiCoordinator {
         // Start background refresh task
         Self::start_refresh_task(
             self.client.clone(),
-            namespace.clone(),
+            namespace_str.clone(),
             self.config.relay_url.clone(),
             Duration::from_secs(self.config.refresh_interval_secs),
             shutdown_rx,
         );
 
         let handle = NamespaceUnregisterHandle {
-            namespace: namespace.clone(),
+            namespace_key: namespace_str,
             client: self.client.clone(),
             shutdown_tx: Some(shutdown_tx),
         };
@@ -212,7 +229,16 @@ impl Coordinator for ApiCoordinator {
         Ok(NamespaceRegistration::new(handle))
     }
 
-    async fn unregister_namespace(&self, namespace: &TrackNamespace) -> CoordinatorResult<()> {
+    async fn unregister_namespace(
+        &self,
+        scope: Option<&str>,
+        namespace: &TrackNamespace,
+    ) -> CoordinatorResult<()> {
+        // Scope intentionally ignored — see struct-level doc comment.
+        if let Some(s) = scope {
+            tracing::debug!(scope = s, "ApiCoordinator: scope ignored for unregister_namespace");
+        }
+
         let namespace_str = namespace.to_utf8_path();
         tracing::info!(namespace = %namespace_str, "unregistering namespace from API: {}", namespace_str);
 
@@ -227,10 +253,13 @@ impl Coordinator for ApiCoordinator {
 
     async fn lookup(
         &self,
+        scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<(NamespaceOrigin, Option<quic::Client>)> {
+        // Scope intentionally ignored — see struct-level doc comment.
         let namespace_str = namespace.to_utf8_path();
-        tracing::debug!(namespace = %namespace_str, "looking up namespace in API: {}", namespace_str);
+        let scope_str = scope.unwrap_or("<unscoped>");
+        tracing::debug!(scope = scope_str, namespace = %namespace_str, "looking up namespace in API: {}", namespace_str);
 
         // Query the API for the namespace
         let result = self

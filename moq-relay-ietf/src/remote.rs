@@ -131,12 +131,16 @@ impl RemotesConsumer {
     }
 
     /// Route to a remote origin based on the namespace.
+    ///
+    /// `scope` is the resolved scope identity (from `Coordinator::resolve_scope()`),
+    /// passed through to the coordinator's `lookup()` to scope the search.
     pub async fn route(
         &self,
+        scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> anyhow::Result<Option<RemoteConsumer>> {
         // Always fetch the origin instead of using the (potentially invalid) cache.
-        let (origin, client) = self.coordinator.lookup(namespace).await?;
+        let (origin, client) = self.coordinator.lookup(scope, namespace).await?;
 
         // Check if we already have a remote for this origin
         let state = self.state.lock();

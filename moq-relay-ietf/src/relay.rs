@@ -149,7 +149,21 @@ impl Relay {
                     .await
                     .context("failed to establish forward session")?;
 
-            // Create a normal looking session, except we never forward or register announces.
+            // Use the connection path already validated and stored by Session::connect().
+            // The forward session is scoped to whatever path the announce URL specifies.
+            //
+            // Note: the forward connection intentionally does not call
+            // coordinator.resolve_scope(). The announce URL is operator-configured
+            // (via --announce), not client-supplied, so it doesn't need the same
+            // auth/permission checks that incoming client connections get. The
+            // forward session always gets both Producer and Consumer (full
+            // read-write) since it's acting as a relay peer, not a client.
+            //
+            // Limitation: all incoming scopes are forwarded to this single upstream scope.
+            // Multi-scope forwarding (routing different incoming scopes to different
+            // upstream paths) would require per-scope forward connections.
+            let forward_scope = session.connection_path().map(|s| s.to_string());
+
             let coordinator = self.coordinator.clone();
             let session = Session {
                 session,
@@ -157,12 +171,14 @@ impl Relay {
                     publisher,
                     self.locals.clone(),
                     remotes.clone(),
+                    forward_scope.clone(),
                 )),
                 consumer: Some(Consumer::new(
                     subscriber,
                     self.locals.clone(),
                     coordinator,
                     None,
+                    forward_scope,
                 )),
             };
 
@@ -246,10 +262,16 @@ impl Relay {
 
                         // Create our MoQ relay session
                         let moq_session = session;
+
+                        // Use the connection path as the scope identity for this session.
+                        // The connection_path was already validated and normalized during
+                        // Session::accept() — it's safe to use directly as a scope key.
+                        let scope = moq_session.connection_path().map(|s| s.to_string());
+
                         let session = Session {
                             session: moq_session,
-                            producer: publisher.map(|publisher| Producer::new(publisher, locals.clone(), remotes)),
-                            consumer: subscriber.map(|subscriber| Consumer::new(subscriber, locals, coordinator, forward)),
+                            producer: publisher.map(|publisher| Producer::new(publisher, locals.clone(), remotes, scope.clone())),
+                            consumer: subscriber.map(|subscriber| Consumer::new(subscriber, locals, coordinator, forward, scope)),
                         };
 
                         match session.run().await {

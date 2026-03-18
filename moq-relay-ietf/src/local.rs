@@ -10,10 +10,28 @@ use moq_transport::{
 
 use crate::metrics::GaugeGuard;
 
-/// Registry of local tracks
+/// Scope key for the outer level of the two-level registry.
+///
+/// An empty string (`""`) represents the global/unscoped bucket. All unscoped
+/// connections share this bucket — any publisher without a scope can be reached
+/// by any subscriber without a scope. This is the default behavior for backward
+/// compatibility with pre-scope deployments.
+///
+/// We use `String` rather than `Option<String>` so that `HashMap::get` can
+/// accept a `&str` via the `Borrow` trait, avoiding a heap allocation on
+/// every lookup in `retrieve()`.
+type ScopeKey = String;
+
+/// The scope key used for unscoped (global) registrations.
+const UNSCOPED: &str = "";
+
+/// Registry of local tracks, indexed by (scope, namespace).
+///
+/// Uses a two-level map so that `retrieve()` only scans namespaces within
+/// the matching scope, rather than iterating all namespaces across all scopes.
 #[derive(Clone)]
 pub struct Locals {
-    lookup: Arc<Mutex<HashMap<TrackNamespace, TracksReader>>>,
+    lookup: Arc<Mutex<HashMap<ScopeKey, HashMap<TrackNamespace, TracksReader>>>>,
 }
 
 impl Default for Locals {
@@ -31,17 +49,29 @@ impl Locals {
     }
 
     /// Register new local tracks.
-    pub async fn register(&mut self, tracks: TracksReader) -> anyhow::Result<Registration> {
+    ///
+    /// `scope` is the resolved scope identity from `Coordinator::resolve_scope()`,
+    /// or `None` for unscoped sessions. Registrations are keyed by `(scope, namespace)`,
+    /// so the same namespace in different scopes routes independently.
+    pub async fn register(
+        &mut self,
+        scope: Option<&str>,
+        tracks: TracksReader,
+    ) -> anyhow::Result<Registration> {
         let namespace = tracks.namespace.clone();
+        let scope_key = scope.unwrap_or(UNSCOPED).to_string();
 
-        // Insert the tracks(TracksReader) into the lookup table
-        match self.lookup.lock().unwrap().entry(namespace.clone()) {
+        // Insert the tracks into the scope bucket
+        let mut lookup = self.lookup.lock().unwrap();
+        let bucket = lookup.entry(scope_key.clone()).or_default();
+        match bucket.entry(namespace.clone()) {
             hash_map::Entry::Vacant(entry) => entry.insert(tracks),
             hash_map::Entry::Occupied(_) => return Err(ServeError::Duplicate.into()),
         };
 
         let registration = Registration {
             locals: self.clone(),
+            scope_key,
             namespace,
             _gauge_guard: GaugeGuard::new("moq_relay_announced_namespaces"),
         };
@@ -51,14 +81,26 @@ impl Locals {
 
     /// Retrieve local tracks by namespace using hierarchical prefix matching.
     /// Returns the TracksReader for the longest matching namespace prefix.
-    pub fn retrieve(&self, namespace: &TrackNamespace) -> Option<TracksReader> {
+    ///
+    /// `scope` is the resolved scope identity from `Coordinator::resolve_scope()`,
+    /// or `None` for unscoped sessions. When `scope` is `None`, only tracks
+    /// registered without a scope (the global/unscoped bucket) are searched.
+    pub fn retrieve(
+        &self,
+        scope: Option<&str>,
+        namespace: &TrackNamespace,
+    ) -> Option<TracksReader> {
         let lookup = self.lookup.lock().unwrap();
 
-        // Find the longest matching prefix
+        // Look up the scope bucket directly — O(1), zero allocation.
+        // HashMap<String, V>::get accepts &str via Borrow<str>.
+        let bucket = lookup.get(scope.unwrap_or(UNSCOPED))?;
+
+        // Find the longest matching prefix within this scope
         let mut best_match: Option<TracksReader> = None;
         let mut best_len = 0;
 
-        for (registered_ns, tracks) in lookup.iter() {
+        for (registered_ns, tracks) in bucket.iter() {
             // Check if registered_ns is a prefix of namespace
             if namespace.fields.len() >= registered_ns.fields.len() {
                 let is_prefix = registered_ns
@@ -80,6 +122,7 @@ impl Locals {
 
 pub struct Registration {
     locals: Locals,
+    scope_key: ScopeKey,
     namespace: TrackNamespace,
     /// Gauge guard for tracking announced namespaces - decrements on drop
     _gauge_guard: GaugeGuard,
@@ -89,7 +132,20 @@ pub struct Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         let ns = self.namespace.to_utf8_path();
-        tracing::debug!(namespace = %ns, "deregistering namespace from locals");
-        self.locals.lookup.lock().unwrap().remove(&self.namespace);
+        let scope = if self.scope_key.is_empty() {
+            "<unscoped>"
+        } else {
+            &self.scope_key
+        };
+        tracing::debug!(namespace = %ns, scope = %scope, "deregistering namespace from locals");
+
+        let mut lookup = self.locals.lookup.lock().unwrap();
+        if let Some(bucket) = lookup.get_mut(self.scope_key.as_str()) {
+            bucket.remove(&self.namespace);
+            // Clean up empty scope buckets to avoid memory leaks
+            if bucket.is_empty() {
+                lookup.remove(self.scope_key.as_str());
+            }
+        }
     }
 }

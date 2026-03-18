@@ -16,6 +16,10 @@ pub struct Consumer {
     locals: Locals,
     coordinator: Arc<dyn Coordinator>,
     forward: Option<Producer>, // Forward all announcements to this subscriber
+    /// The resolved scope identity for this session, if any.
+    /// Produced by `Coordinator::resolve_scope()` from the connection path.
+    /// Passed to coordinator register/lookup calls to isolate namespaces.
+    scope: Option<String>,
 }
 
 impl Consumer {
@@ -24,12 +28,14 @@ impl Consumer {
         locals: Locals,
         coordinator: Arc<dyn Coordinator>,
         forward: Option<Producer>,
+        scope: Option<String>,
     ) -> Self {
         Self {
             subscriber,
             locals,
             coordinator,
             forward,
+            scope,
         }
     }
 
@@ -84,7 +90,7 @@ impl Consumer {
         tracing::debug!(namespace = %ns, "registering namespace with coordinator");
         let _namespace_registration = match self
             .coordinator
-            .register_namespace(&reader.namespace)
+            .register_namespace(self.scope.as_deref(), &reader.namespace)
             .await
         {
             Ok(reg) => reg,
@@ -98,7 +104,11 @@ impl Consumer {
 
         // Register the local tracks, unregister on drop
         tracing::debug!(namespace = %ns, "registering namespace in locals");
-        let _register = match self.locals.register(reader.clone()).await {
+        let _register = match self
+            .locals
+            .register(self.scope.as_deref(), reader.clone())
+            .await
+        {
             Ok(reg) => reg,
             Err(err) => {
                 metrics::counter!("moq_relay_announce_errors_total", "phase" => "local_register")

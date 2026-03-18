@@ -148,6 +148,9 @@ pub trait Coordinator: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `scope` - The resolved scope identity, or `None` for unscoped
+    ///   sessions. Used to isolate namespace registrations — the same
+    ///   namespace in different scopes may route independently.
     /// * `namespace` - The namespace being registered
     ///
     /// # Returns
@@ -156,6 +159,7 @@ pub trait Coordinator: Send + Sync {
     /// as long as this handle is held. Dropping it unregisters the namespace.
     async fn register_namespace(
         &self,
+        scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<NamespaceRegistration>;
 
@@ -167,8 +171,13 @@ pub trait Coordinator: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `scope` - The resolved scope identity, or `None` for unscoped sessions.
     /// * `namespace` - The namespace to unregister
-    async fn unregister_namespace(&self, namespace: &TrackNamespace) -> CoordinatorResult<()>;
+    async fn unregister_namespace(
+        &self,
+        scope: Option<&str>,
+        namespace: &TrackNamespace,
+    ) -> CoordinatorResult<()>;
 
     /// Lookup where a namespace is served from.
     ///
@@ -180,6 +189,9 @@ pub trait Coordinator: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `scope` - The resolved scope identity, or `None` for unscoped
+    ///   sessions. Coordinators use this to scope lookups (e.g., to route
+    ///   to the correct origin for a particular application).
     /// * `namespace` - The namespace to look up
     ///
     /// # Returns
@@ -188,6 +200,7 @@ pub trait Coordinator: Send + Sync {
     /// - `Err` - Namespace not found anywhere
     async fn lookup(
         &self,
+        scope: Option<&str>,
         namespace: &TrackNamespace,
     ) -> CoordinatorResult<(NamespaceOrigin, Option<quic::Client>)>;
 
