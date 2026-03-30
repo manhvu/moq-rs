@@ -1,7 +1,7 @@
 [package]
 name = "moq-test-client"
 description = "MoQT Interop Test Client - A standardized test client for interoperability testing"
-authors = []
+authors = ["moq-rs contributors]
 repository = "https://github.com/cloudflare/moq-rs"
 license = "MIT OR Apache-2.0"
 

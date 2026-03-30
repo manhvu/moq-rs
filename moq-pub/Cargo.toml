@@ -1,8 +1,8 @@
 [package]
 name = "moq-pub"
 description = "Media over QUIC"
-authors = ["Mike English", "Luke Curley"]
-repository = "https://github.com/englishm/moq-rs"
+authors = ["moq-rs contributors"]
+repository = "https://github.com/cloudflare/moq-rs"
 license = "MIT OR Apache-2.0"
 
 version = "0.8.11"
