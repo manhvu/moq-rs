@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.14](https://github.com/cloudflare/moq-rs/compare/moq-relay-ietf-v0.7.13...moq-relay-ietf-v0.7.14) - 2026-03-31
+
+### Other
+
+- Make repo REUSE v3.3 compliant
+- Bring copyright notices, license docs up to date
+
 ## [0.7.13](https://github.com/cloudflare/moq-rs/compare/moq-relay-ietf-v0.7.12...moq-relay-ietf-v0.7.13) - 2026-03-27
 
 ### Added

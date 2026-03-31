@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/cloudflare/moq-rs/compare/moq-test-client-v0.1.3...moq-test-client-v0.1.4) - 2026-03-31
+
+### Other
+
+- Make repo REUSE v3.3 compliant
+- Bring copyright notices, license docs up to date
+
 ## [0.1.3](https://github.com/cloudflare/moq-rs/compare/moq-test-client-v0.1.2...moq-test-client-v0.1.3) - 2026-03-27
 
 ### Added

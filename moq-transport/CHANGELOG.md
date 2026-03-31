@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1](https://github.com/cloudflare/moq-rs/compare/moq-transport-v0.14.0...moq-transport-v0.14.1) - 2026-03-31
+
+### Other
+
+- Make repo REUSE v3.3 compliant
+- Bring copyright notices, license docs up to date
+
 ## [0.14.0](https://github.com/cloudflare/moq-rs/compare/moq-transport-v0.13.1...moq-transport-v0.14.0) - 2026-03-27
 
 ### Added

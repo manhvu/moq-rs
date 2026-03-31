@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.12](https://github.com/cloudflare/moq-rs/compare/moq-pub-v0.8.11...moq-pub-v0.8.12) - 2026-03-31
+
+### Other
+
+- Make repo REUSE v3.3 compliant
+- Bring copyright notices, license docs up to date
+
 ## [0.8.11](https://github.com/cloudflare/moq-rs/compare/moq-pub-v0.8.10...moq-pub-v0.8.11) - 2026-03-27
 
 ### Added

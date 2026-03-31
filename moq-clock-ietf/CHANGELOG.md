@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12](https://github.com/cloudflare/moq-rs/compare/moq-clock-ietf-v0.6.11...moq-clock-ietf-v0.6.12) - 2026-03-31
+
+### Other
+
+- Make repo REUSE v3.3 compliant
+
 ## [0.6.11](https://github.com/cloudflare/moq-rs/compare/moq-clock-ietf-v0.6.10...moq-clock-ietf-v0.6.11) - 2026-03-27
 
 ### Added
