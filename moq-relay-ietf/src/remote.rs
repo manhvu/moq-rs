@@ -10,6 +10,17 @@ use std::ops;
 use std::sync::Arc;
 use std::sync::Weak;
 
+/// Cache key for upstream relay-to-relay connections.
+///
+/// Keyed by both URL and destination address so that connections are
+/// reused only when both match. This matters when a [`Coordinator`]
+/// returns the same URL for different namespaces (e.g. a shared relay
+/// hostname) but distinguishes destinations via [`NamespaceOrigin::addr`].
+/// Without the address in the key, all namespaces that share a URL
+/// would be routed through a single cached connection to whichever
+/// upstream host was contacted first.
+type RemoteCacheKey = (Url, Option<SocketAddr>);
+
 use futures::stream::FuturesUnordered;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -44,7 +55,7 @@ impl Remotes {
 
 #[derive(Default)]
 struct RemotesState {
-    lookup: HashMap<Url, RemoteConsumer>,
+    lookup: HashMap<RemoteCacheKey, RemoteConsumer>,
     requested: VecDeque<RemoteProducer>,
 }
 
@@ -83,6 +94,7 @@ impl RemotesProducer {
             tokio::select! {
                 Some(mut remote) = self.next() => {
                     let url = remote.url.clone();
+                    let cache_key = (url.clone(), remote.addr);
 
                     // Spawn a task to serve the remote
                     tasks.push(async move {
@@ -96,16 +108,16 @@ impl RemotesProducer {
                             tracing::warn!(remote_url = %remote_url, error = %err, "failed serving remote: {:?}, error: {}", info, err);
                         }
 
-                        url
+                        cache_key
                     });
                 }
 
                 // Handle finished remote producers
                 res = tasks.next(), if !tasks.is_empty() => {
-                    let url = res.unwrap();
+                    let cache_key = res.unwrap();
 
                     if let Some(mut state) = self.state.lock_mut() {
-                        state.lookup.remove(&url);
+                        state.lookup.remove(&cache_key);
                     }
                 },
                 else => return Ok(()),
@@ -145,9 +157,11 @@ impl RemotesConsumer {
         // Always fetch the origin instead of using the (potentially invalid) cache.
         let (origin, client) = self.coordinator.lookup(scope, namespace).await?;
 
+        let cache_key = (origin.url(), origin.addr());
+
         // Check if we already have a remote for this origin
         let state = self.state.lock();
-        if let Some(remote) = state.lookup.get(&origin.url()).cloned() {
+        if let Some(remote) = state.lookup.get(&cache_key).cloned() {
             return Ok(Some(remote));
         }
 
@@ -168,8 +182,8 @@ impl RemotesConsumer {
         let (writer, reader) = remote.produce();
         state.requested.push_back(writer);
 
-        // Insert the remote into our Map
-        state.lookup.insert(origin.url(), reader.clone());
+        // Insert the remote into our Map, keyed by both URL and destination address
+        state.lookup.insert(cache_key, reader.clone());
 
         Ok(Some(reader))
     }
