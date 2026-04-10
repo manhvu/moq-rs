@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let tls = config.tls.load()?;
 
     // Create the QUIC endpoint
-    let quic = quic::Endpoint::new(quic::Config::new(config.bind, None, tls))?;
+    let quic = quic::Endpoint::new(quic::Config::new(config.bind, None, tls)?)?;
 
     tracing::info!("connecting to server: url={}", config.url);
 

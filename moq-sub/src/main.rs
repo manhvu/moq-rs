@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
     let tls = config.tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config::new(config.bind, None, tls))?;
+    let quic = quic::Endpoint::new(quic::Config::new(config.bind, None, tls)?)?;
 
     let (session, connection_id) = quic.client.connect(&config.url, None).await?;
 

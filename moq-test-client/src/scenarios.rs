@@ -27,7 +27,7 @@ const TEST_TRACK: &str = "test-track";
 /// Returns (session, connection_id) so we can report CIDs for mlog correlation
 async fn connect(args: &Args) -> Result<(web_transport::Session, String)> {
     let tls = args.tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config::new(args.bind, None, tls))?;
+    let quic = quic::Endpoint::new(quic::Config::new(args.bind, None, tls)?)?;
 
     let (session, connection_id) = quic.client.connect(&args.relay, None).await?;
     Ok((session, connection_id))
