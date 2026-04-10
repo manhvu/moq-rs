@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/cloudflare/moq-rs/compare/moq-test-client-v0.1.4...moq-test-client-v0.1.5) - 2026-04-10
+
+### Fixed
+
+- cross-platform dual-stack binding for IPv6 sockets
+
+### Other
+
+- Merge pull request #151 from englishm-cloudflare/me/ipv6-dual-stack-binding
+
 ## [0.1.4](https://github.com/cloudflare/moq-rs/compare/moq-test-client-v0.1.3...moq-test-client-v0.1.4) - 2026-03-31
 
 ### Other
