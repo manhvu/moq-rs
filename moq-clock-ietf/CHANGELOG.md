@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.13](https://github.com/cloudflare/moq-rs/compare/moq-clock-ietf-v0.6.12...moq-clock-ietf-v0.6.13) - 2026-04-10
+
+### Fixed
+
+- cross-platform dual-stack binding for IPv6 sockets
+
+### Other
+
+- Merge pull request #151 from englishm-cloudflare/me/ipv6-dual-stack-binding
+
 ## [0.6.12](https://github.com/cloudflare/moq-rs/compare/moq-clock-ietf-v0.6.11...moq-clock-ietf-v0.6.12) - 2026-03-31
 
 ### Other
