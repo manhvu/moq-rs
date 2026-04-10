@@ -79,7 +79,7 @@ impl Relay {
                 bind,
                 config.qlog_dir.clone(),
                 config.tls.clone(),
-            ))?;
+            )?)?;
             vec![endpoint]
         } else {
             config.endpoints
