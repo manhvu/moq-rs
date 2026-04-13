@@ -82,28 +82,10 @@ impl Consumer {
         // Produce the tracks for this announce and return the reader
         let (_, mut request, reader) = Tracks::new(announce.namespace.clone()).produce();
 
-        // NOTE(mpandit): once the track is pulled from origin, internally it will be relayed
-        // from this metal only, because now coordinator will have entry for the namespace.
-
         // should we allow the same namespace being served from multiple relays??
+        // Manish: NO.
 
         let ns = reader.namespace.to_utf8_path();
-
-        // Register namespace with the coordinator
-        tracing::debug!(namespace = %ns, "registering namespace with coordinator");
-        let _namespace_registration = match self
-            .coordinator
-            .register_namespace(self.scope.as_deref(), &reader.namespace)
-            .await
-        {
-            Ok(reg) => reg,
-            Err(err) => {
-                metrics::counter!("moq_relay_announce_errors_total", "phase" => "coordinator_register")
-                    .increment(1);
-                return Err(err.into());
-            }
-        };
-        tracing::debug!(namespace = %ns, "namespace registered with coordinator");
 
         // Register the local tracks, unregister on drop
         tracing::debug!(namespace = %ns, "registering namespace in locals");
@@ -120,6 +102,25 @@ impl Consumer {
             }
         };
         tracing::debug!(namespace = %ns, "namespace registered in locals");
+
+        // NOTE(mpandit): once the track is pulled from origin, internally it will be relayed
+        // from this metal only, because now coordinator will have entry for the namespace.
+
+        // Register namespace with the coordinator
+        tracing::debug!(namespace = %ns, "registering namespace with coordinator");
+        let _namespace_registration = match self
+            .coordinator
+            .register_namespace(self.scope.as_deref(), &reader.namespace)
+            .await
+        {
+            Ok(reg) => reg,
+            Err(err) => {
+                metrics::counter!("moq_relay_announce_errors_total", "phase" => "coordinator_register")
+                    .increment(1);
+                return Err(err.into());
+            }
+        };
+        tracing::debug!(namespace = %ns, "namespace registered with coordinator");
 
         // Accept the announce with an OK response
         if let Err(err) = announce.ok() {
