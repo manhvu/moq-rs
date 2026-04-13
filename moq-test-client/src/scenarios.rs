@@ -36,7 +36,7 @@ async fn connect(
     moq_transport::session::Transport,
 )> {
     let tls = args.tls.load()?;
-    let quic = quic::Endpoint::new(quic::Config::new(args.bind, None, tls))?;
+    let quic = quic::Endpoint::new(quic::Config::new(args.bind, None, tls)?)?;
 
     let (session, connection_id, transport) = quic.client.connect(&args.relay, None).await?;
     Ok((session, connection_id, transport))

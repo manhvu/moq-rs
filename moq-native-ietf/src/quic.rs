@@ -14,6 +14,7 @@ use std::{
 
 use anyhow::Context;
 use clap::Parser;
+use socket2::{Domain, Protocol, Socket, Type};
 use url::Url;
 
 use moq_transport::session::Transport;
@@ -29,7 +30,7 @@ use futures::FutureExt;
 pub enum AddressFamily {
     Ipv4,
     Ipv6,
-    /// IPv6 with dual-stack support (Linux)
+    /// IPv6 with dual-stack support (IPV6_V6ONLY=false)
     Ipv6DualStack,
 }
 
@@ -48,6 +49,67 @@ impl fmt::Display for AddressFamily {
     }
 }
 
+/// Bind a UDP socket, attempting dual-stack if the address is IPv6.
+///
+/// For IPv6 addresses, attempts to set `IPV6_V6ONLY = false` to enable
+/// dual-stack operation (accepting both IPv4 and IPv6 traffic). This is
+/// the default on Linux but must be explicitly requested on macOS/Windows.
+///
+/// Returns `(socket, is_dual_stack)` where `is_dual_stack` indicates
+/// whether the socket can handle both IPv4 and IPv6 destinations.
+fn bind_smart(addr: net::SocketAddr) -> anyhow::Result<(net::UdpSocket, bool)> {
+    let domain = if addr.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
+        .context("failed to create UDP socket")?;
+
+    let mut is_dual_stack = false;
+
+    if addr.is_ipv6() {
+        match socket.set_only_v6(false) {
+            Ok(()) => {
+                is_dual_stack = true;
+                tracing::debug!(addr = %addr, "IPv6 dual-stack enabled (IPV6_V6ONLY=false)");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    addr = %addr,
+                    error = %e,
+                    "Could not enable dual-stack on IPv6 socket; \
+                     IPv4-only destinations may be unreachable"
+                );
+            }
+        }
+    }
+
+    socket
+        .bind(&addr.into())
+        .with_context(|| format!("failed to bind UDP socket to {}", addr))?;
+
+    let local_addr = match socket.local_addr() {
+        Ok(a) => a
+            .as_socket()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "<non-IP address>".to_string()),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to get local address after successful bind");
+            "<unknown>".to_string()
+        }
+    };
+
+    tracing::info!(
+        bind = %addr,
+        local = %local_addr,
+        dual_stack = is_dual_stack,
+        "UDP socket bound"
+    );
+
+    Ok((socket.into(), is_dual_stack))
+}
+
 /// Build a TransportConfig with our standard settings
 ///
 /// This is used both for the base endpoint config and when creating
@@ -64,7 +126,11 @@ fn build_transport_config() -> quinn::TransportConfig {
 #[derive(Parser, Clone)]
 pub struct Args {
     /// Listen for UDP packets on the given address.
-    #[arg(long, default_value = "[::]:0")]
+    ///
+    /// Defaults to [::]:0 (IPv6 with dual-stack). If the default IPv6 bind
+    /// fails, automatically falls back to 0.0.0.0 (IPv4-only) with a warning.
+    /// Explicitly provided IPv6 addresses will not fall back.
+    #[arg(long, default_value = Args::DEFAULT_BIND)]
     pub bind: net::SocketAddr,
 
     /// Directory to write qlog files (one per connection)
@@ -78,7 +144,7 @@ pub struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            bind: "[::]:0".parse().unwrap(),
+            bind: Self::DEFAULT_BIND.parse().unwrap(),
             qlog_dir: None,
             tls: Default::default(),
         }
@@ -86,31 +152,62 @@ impl Default for Args {
 }
 
 impl Args {
+    /// The default bind address used when `--bind` is not explicitly provided.
+    const DEFAULT_BIND: &str = "[::]:0";
+
     pub fn load(&self) -> anyhow::Result<Config> {
         let tls = self.tls.load()?;
-        Ok(Config::new(self.bind, self.qlog_dir.clone(), tls))
+
+        match Config::new(self.bind, self.qlog_dir.clone(), tls.clone()) {
+            Ok(config) => Ok(config),
+            Err(e) if self.bind.to_string() == Self::DEFAULT_BIND => {
+                // IPv6 default bind failed -- try falling back to IPv4.
+                // Only do this for the default; if the user explicitly
+                // requested an IPv6 address, respect that and propagate
+                // the error.
+                let fallback = net::SocketAddr::new(
+                    net::IpAddr::V4(net::Ipv4Addr::UNSPECIFIED),
+                    self.bind.port(),
+                );
+                tracing::warn!(
+                    requested = %self.bind,
+                    fallback = %fallback,
+                    error = %e,
+                    "IPv6 bind failed, falling back to IPv4"
+                );
+                Config::new(fallback, self.qlog_dir.clone(), tls).with_context(|| {
+                    format!("IPv4 fallback also failed (original IPv6 error: {})", e)
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
 pub struct Config {
     pub bind: Option<net::SocketAddr>,
     pub socket: net::UdpSocket,
+    pub is_dual_stack: bool,
     pub qlog_dir: Option<PathBuf>,
     pub tls: tls::Config,
     pub tags: HashSet<String>,
 }
 
 impl Config {
-    pub fn new(bind: net::SocketAddr, qlog_dir: Option<PathBuf>, tls: tls::Config) -> Self {
-        Self {
+    pub fn new(
+        bind: net::SocketAddr,
+        qlog_dir: Option<PathBuf>,
+        tls: tls::Config,
+    ) -> anyhow::Result<Self> {
+        let (socket, is_dual_stack) = bind_smart(bind)?;
+        Ok(Self {
             bind: Some(bind),
-            socket: net::UdpSocket::bind(bind)
-                .context("failed to bind socket")
-                .unwrap(),
+            socket,
+            is_dual_stack,
             qlog_dir,
             tls,
             tags: HashSet::new(),
-        }
+        })
     }
 
     pub fn with_socket(
@@ -118,9 +215,18 @@ impl Config {
         qlog_dir: Option<PathBuf>,
         tls: tls::Config,
     ) -> Self {
+        // Probe the socket to detect dual-stack capability rather than assuming.
+        let is_dual_stack = socket.local_addr().is_ok_and(|addr| {
+            addr.is_ipv6() && {
+                let sock_ref = socket2::SockRef::from(&socket);
+                sock_ref.only_v6().map(|v6only| !v6only).unwrap_or(false)
+            }
+        });
+
         Self {
             bind: None,
             socket,
+            is_dual_stack,
             qlog_dir,
             tls,
             tags: HashSet::new(),
@@ -197,6 +303,7 @@ impl Endpoint {
             quic,
             config: config.tls.client,
             transport,
+            is_dual_stack: config.is_dual_stack,
         };
 
         Ok(Self {
@@ -353,6 +460,7 @@ pub struct Client {
     quic: quinn::Endpoint,
     config: rustls::ClientConfig,
     transport: Arc<quinn::TransportConfig>,
+    is_dual_stack: bool,
 }
 
 impl Client {
@@ -364,6 +472,9 @@ impl Client {
     }
 
     /// Returns the address family of the local QUIC socket.
+    ///
+    /// Uses the dual-stack state determined at bind time rather than
+    /// compile-time platform assumptions.
     pub fn address_family(&self) -> anyhow::Result<AddressFamily> {
         let local_addr = self
             .quic
@@ -372,7 +483,7 @@ impl Client {
 
         if local_addr.is_ipv4() {
             Ok(AddressFamily::Ipv4)
-        } else if cfg!(target_os = "linux") {
+        } else if self.is_dual_stack {
             Ok(AddressFamily::Ipv6DualStack)
         } else {
             Ok(AddressFamily::Ipv6)
@@ -513,15 +624,12 @@ impl Client {
                     ))?
             }
             AddressFamily::Ipv6DualStack => {
-                // IPv6 socket on Linux: dual-stack, use first result
-                tracing::debug!(
-                    "Using first DNS result (Linux IPv6 dual-stack): {}",
-                    addrs[0]
-                );
+                // Dual-stack socket: any address family works, use first result
+                tracing::debug!("Using first DNS result (IPv6 dual-stack): {}", addrs[0]);
                 addrs[0]
             }
             AddressFamily::Ipv6 => {
-                // IPv6 socket non-Linux: filter to IPv6 addresses
+                // IPv6-only socket: filter to IPv6 addresses
                 addrs
                     .iter()
                     .find(|a| a.is_ipv6())

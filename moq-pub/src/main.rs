@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         cli.bind,
         None,
         tls.clone(),
-    ))?;
+    )?)?;
 
     tracing::info!("connecting to relay: url={}", cli.url);
     let (session, connection_id, transport) = quic.client.connect(&cli.url, None).await?;
