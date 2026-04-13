@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.17](https://github.com/cloudflare/moq-rs/compare/moq-relay-ietf-v0.7.16...moq-relay-ietf-v0.7.17) - 2026-04-13
+
+### Fixed
+
+- always register in coordinator after registering in local
+
+### Other
+
+- Merge branch 'main' of github.com:itzmanish/moq-rs into fix-register-order-namespace
+
 ## [0.7.16](https://github.com/cloudflare/moq-rs/compare/moq-relay-ietf-v0.7.15...moq-relay-ietf-v0.7.16) - 2026-04-10
 
 ### Fixed
